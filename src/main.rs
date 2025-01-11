@@ -7,6 +7,7 @@ mod args;
 mod cargo;
 mod cli;
 mod dependency;
+mod loading;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args::CargoCli::InteractiveUpdate(args) = args::CargoCli::parse();
@@ -18,7 +19,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dependencies = cargo::CargoDependencies::gather_dependencies();
     let total_deps = dependencies.len();
 
-    let (outdated_deps, cargo_toml) = dependencies.into_parts();
+    let loader = loading::init_loader(total_deps).unwrap();
+
+    let (outdated_deps, cargo_toml) = dependencies.into_parts(loader);
     let total_outdated_deps = outdated_deps.len();
 
     if total_outdated_deps == 0 {

@@ -75,12 +75,19 @@ impl CargoDependencies {
         }
     }
 
-    pub fn into_parts(self) -> (Dependencies, DocumentMut) {
+    pub fn into_parts(self, loader: crate::loading::Loader) -> (Dependencies, DocumentMut) {
         (
             Dependencies::new(
                 self.dependencies
                     .into_iter()
-                    .map(|d| std::thread::spawn(move || d.get_latest_version_wrapper()))
+                    .map(|d| {
+                        let loader = loader.clone();
+                        std::thread::spawn(move || {
+                            let ret = d.get_latest_version_wrapper();
+                            loader.inc_loader();
+                            ret
+                        })
+                    })
                     .collect::<Vec<_>>()
                     .into_iter()
                     .flat_map(|t| t.join())
