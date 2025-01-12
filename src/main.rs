@@ -1,6 +1,7 @@
-use std::time::Duration;
+use std::{io::stdout, time::Duration};
 
 use clap::Parser;
+use crossterm::{cursor::Show, execute, style::ResetColor, terminal::disable_raw_mode};
 
 mod api;
 mod args;
@@ -26,6 +27,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if total_outdated_deps == 0 {
         println!("All {total_deps} direct dependencies are up to date!");
+        execute!(stdout(), Show, ResetColor)?;
+        disable_raw_mode()?;
         return Ok(());
     }
 
