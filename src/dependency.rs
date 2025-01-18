@@ -3,16 +3,33 @@ use toml_edit::{value, DocumentMut, Item, Value};
 
 use crate::args::Args;
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Dependency {
     pub name: String,
     pub current_version: String,
     pub latest_version: String,
+    pub path: Option<String>,
     pub repository: Option<String>,
     pub description: Option<String>,
-    pub latest_version_date: Option<String>,
-    pub current_version_date: Option<String>,
     pub kind: DependencyKind,
+}
+
+impl Ord for Dependency {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        let ordering = self.kind.cmp(&other.kind);
+
+        if ordering == std::cmp::Ordering::Equal {
+            self.name.cmp(&other.name)
+        } else {
+            ordering
+        }
+    }
+}
+
+impl PartialOrd for Dependency {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

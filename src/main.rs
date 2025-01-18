@@ -13,7 +13,9 @@ mod args;
 mod cargo;
 mod cli;
 mod dependency;
+mod info;
 mod loading;
+mod search;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args::CargoCli::InteractiveUpdate(args) = args::CargoCli::parse();

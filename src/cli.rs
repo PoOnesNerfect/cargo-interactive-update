@@ -348,8 +348,6 @@ impl State {
             latest_version,
             repository,
             description,
-            latest_version_date,
-            current_version_date,
             ..
         } = &self.outdated_deps.0[i];
 
@@ -360,15 +358,6 @@ impl State {
             " ".repeat(self.longest_attributes.latest_version - latest_version.len());
 
         let bullet = if self.selected[i] { "●" } else { "○" };
-
-        let latest_version_date = get_date_from_datetime_string(latest_version_date.as_deref())
-            .unwrap_or("none      ")
-            .italic()
-            .dim();
-        let current_version_date = get_date_from_datetime_string(current_version_date.as_deref())
-            .unwrap_or("none      ")
-            .italic()
-            .dim();
 
         let name = name.clone().bold();
         let mut repository = repository.as_deref().unwrap_or("none").underline_black();
@@ -389,7 +378,7 @@ impl State {
         }
 
         let row = format!(
-            "{bullet} {name}{name_spacing}  {current_version_date} {current_version}{current_version_spacing} -> {latest_version_date} {latest_version}{latest_version_spacing}  {repository} - {description}"
+            "{bullet} {name}{name_spacing}  {current_version}{current_version_spacing} -> {latest_version}{latest_version_spacing}  {repository} - {description}"
         );
 
         let colored_row = if i == self.cursor_location {
@@ -407,12 +396,6 @@ impl State {
         )?;
         Ok(())
     }
-}
-
-fn get_date_from_datetime_string(datetime_string: Option<&str>) -> Option<&str> {
-    datetime_string
-        .and_then(|s| s.split_once('T'))
-        .map(|(date, _)| date)
 }
 
 fn get_dependencies_subsection_title(kind: DependencyKind) -> &'static str {

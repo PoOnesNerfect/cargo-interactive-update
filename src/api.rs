@@ -1,6 +1,30 @@
 use curl::easy::{Easy, List};
+use semver::Version;
 
-use crate::cargo::CargoDependency;
+use crate::{cargo::CargoDependency, dependency::Dependency};
+
+pub fn fetch_package_from_crates_io(dep: CargoDependency) -> Option<Dependency> {
+    let res = get_latest_version(&dep).unwrap()?;
+
+    let parsed_current_version =
+        Version::parse(&dep.version).expect("must be valid semver version");
+    let parsed_latest_version =
+        Version::parse(&res.latest_version).expect("must be valid semver version");
+
+    if parsed_current_version < parsed_latest_version {
+        Some(Dependency {
+            name: dep.name,
+            current_version: dep.version,
+            latest_version: res.latest_version,
+            path: dep.path,
+            repository: res.repository,
+            description: res.description,
+            kind: dep.kind,
+        })
+    } else {
+        None
+    }
+}
 
 #[derive(Debug)]
 pub struct CratesIoResponse {
@@ -9,40 +33,6 @@ pub struct CratesIoResponse {
     pub latest_version: String,
     pub latest_version_date: Option<String>,
     pub current_version_date: Option<String>,
-}
-
-fn get_string_from_value(
-    value: Option<&serde_json::Map<String, serde_json::Value>>,
-    key: &str,
-) -> Option<String> {
-    Some(
-        value?
-            .get(key)?
-            .as_str()?
-            .trim()
-            .split('\n')
-            .collect::<Vec<&str>>()
-            .join(" "),
-    )
-}
-
-fn get_field_from_versions(
-    versions: Option<&Vec<serde_json::Value>>,
-    version: &str,
-    key: &str,
-) -> Option<String> {
-    Some(
-        versions?
-            .iter()
-            .find(|v| {
-                v.get("num").and_then(|v| v.as_str()).unwrap_or("")
-                    == version.trim_start_matches(&['=', '^'])
-            })?
-            .get(key)?
-            .as_str()?
-            .trim()
-            .to_string(),
-    )
 }
 
 impl CratesIoResponse {
@@ -62,16 +52,11 @@ impl CratesIoResponse {
     }
 }
 
-pub fn get_latest_version(
+fn get_latest_version(
     CargoDependency {
-        name,
-        version,
-        package,
-        ..
+        version, package, ..
     }: &CargoDependency,
 ) -> Result<Option<CratesIoResponse>, Box<dyn std::error::Error>> {
-    let package = package.as_ref().unwrap_or(name);
-
     let mut headers = List::new();
 
     let package_name = env!("CARGO_PKG_NAME");
@@ -107,6 +92,40 @@ pub fn get_latest_version(
     };
 
     Ok(CratesIoResponse::from_value(response, version))
+}
+
+fn get_string_from_value(
+    value: Option<&serde_json::Map<String, serde_json::Value>>,
+    key: &str,
+) -> Option<String> {
+    Some(
+        value?
+            .get(key)?
+            .as_str()?
+            .trim()
+            .split('\n')
+            .collect::<Vec<&str>>()
+            .join(" "),
+    )
+}
+
+fn get_field_from_versions(
+    versions: Option<&Vec<serde_json::Value>>,
+    version: &str,
+    key: &str,
+) -> Option<String> {
+    Some(
+        versions?
+            .iter()
+            .find(|v| {
+                v.get("num").and_then(|v| v.as_str()).unwrap_or("")
+                    == version.trim_start_matches(&['=', '^'])
+            })?
+            .get(key)?
+            .as_str()?
+            .trim()
+            .to_string(),
+    )
 }
 
 #[cfg(test)]
