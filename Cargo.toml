@@ -10,15 +10,22 @@ keywords = ["cargo", "update", "interactive"]
 categories = ["command-line-utilities"]
 
 [dependencies]
-cargo-lock = "10.1.0"
-clap = { version = "4.5.20", features = ["derive"] }
+anyhow = "1.0.95"
+cargo = "0.85.0"
+cargo-credential = "0.4.8"
+cargo-lock = "10.0.1"
+cargo-util-schemas = "0.7.1"
+cargo_toml = "0.21.0"
+clap = { version = "4.5.26", features = ["derive"] }
 clap-cargo = "0.15.1"
+crates-io = "0.40.7"
 crossterm = { version = "0.28.1", default-features = false, features = ["events"] }
 curl = "0.4.47"
-semver = "1.0.23"
-serde_json = "1.0.128"
+semver = "1.0.24"
+serde_json = "1.0.135"
 termbg = "0.6.2"
 toml_edit = "0.22.22"
+url = "2.5.4"
 
 [profile.release]
 lto = true

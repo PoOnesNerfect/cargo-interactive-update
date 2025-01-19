@@ -1,13 +1,15 @@
+use std::io::{stdout, Write};
+
 use crossterm::{
     cursor::{Hide, MoveTo, MoveToColumn, MoveToNextLine, Show},
     event::{self, KeyCode, KeyModifiers},
     queue,
     style::{Print, PrintStyledContent, ResetColor, Stylize},
     terminal::{
-        disable_raw_mode, enable_raw_mode, Clear, ClearType, DisableLineWrap, EnableLineWrap,
+        disable_raw_mode, enable_raw_mode, Clear, ClearType, DisableLineWrap,
+        EnableLineWrap,
     },
 };
-use std::io::{stdout, Write};
 use termbg::Theme;
 
 use crate::dependency::{Dependencies, Dependency, DependencyKind};
@@ -46,8 +48,8 @@ impl Longest {
             name = name.max(dep.name.len());
             current_version = current_version.max(dep.current_version.len());
             latest_version = latest_version.max(dep.latest_version.len());
-            workspace_member =
-                workspace_member.max(dep.workspace_member.as_ref().map_or(0, |s| s.len()));
+            workspace_member = workspace_member
+                .max(dep.workspace_member.as_ref().map_or(0, |s| s.len()));
         }
 
         Longest {
@@ -89,7 +91,9 @@ impl State {
         Ok(())
     }
 
-    pub fn handle_keyboard_event(&mut self) -> Result<Event, Box<dyn std::error::Error>> {
+    pub fn handle_keyboard_event(
+        &mut self,
+    ) -> Result<Event, Box<dyn std::error::Error>> {
         if let event::Event::Key(key) = event::read()? {
             match (key.code, key.modifiers) {
                 (KeyCode::Up | KeyCode::Char('k'), _) => {
@@ -104,7 +108,8 @@ impl State {
                 }
                 (KeyCode::Down | KeyCode::Char('j'), _) => {
                     let prev_i = self.cursor_location;
-                    self.cursor_location = (self.cursor_location + 1) % self.outdated_deps.len();
+                    self.cursor_location =
+                        (self.cursor_location + 1) % self.outdated_deps.len();
 
                     self.render_dependencies(&[prev_i, self.cursor_location])?;
                 }
@@ -121,7 +126,8 @@ impl State {
                     self.render_dependencies(&[prev_i, self.cursor_location])?;
                 }
                 (KeyCode::Char(' '), _) => {
-                    self.selected[self.cursor_location] = !self.selected[self.cursor_location];
+                    self.selected[self.cursor_location] =
+                        !self.selected[self.cursor_location];
                     self.render_dependencies(&[self.cursor_location])?;
                 }
                 (KeyCode::Enter, _) => {
@@ -130,7 +136,8 @@ impl State {
                 }
                 (KeyCode::Char('a'), _) => {
                     let all_selected = self.selected.iter().all(|s| *s);
-                    self.selected = vec![!all_selected; self.outdated_deps.len()];
+                    self.selected =
+                        vec![!all_selected; self.outdated_deps.len()];
                     self.render_dependencies(&[])?;
                 }
                 (KeyCode::Char('i'), _) => {
@@ -138,7 +145,10 @@ impl State {
                     self.render_dependencies(&[])?;
                 }
                 (KeyCode::Esc | KeyCode::Char('q'), _)
-                | (KeyCode::Char('c') | KeyCode::Char('z'), KeyModifiers::CONTROL) => {
+                | (
+                    KeyCode::Char('c') | KeyCode::Char('z'),
+                    KeyModifiers::CONTROL,
+                ) => {
                     self.reset_terminal()?;
                     return Ok(Event::Exit);
                 }
@@ -151,7 +161,8 @@ impl State {
     }
 
     fn change_section(&mut self, next: bool) -> usize {
-        let cursor_kind = self.outdated_deps.dependencies[self.cursor_location].kind;
+        let cursor_kind =
+            self.outdated_deps.dependencies[self.cursor_location].kind;
         let mut other_kind = None;
         let mut other_index = self.cursor_location;
         for i in 1..self.outdated_deps.len() {
@@ -207,14 +218,18 @@ impl State {
 
     // parameter takes a specific indices to re-render
     // if indices is empty, then re-render the entire list
-    fn render_dependencies(&mut self, indices: &[usize]) -> Result<(), Box<dyn std::error::Error>> {
+    fn render_dependencies(
+        &mut self,
+        indices: &[usize],
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let mut offset = 0;
 
         queue!(self.stdout, DisableLineWrap)?;
         queue!(self.stdout, MoveTo(0, 0))?;
 
         for kind in DependencyKind::ordered() {
-            offset += self.render_dependencies_subsection(kind, offset, indices)?;
+            offset +=
+                self.render_dependencies_subsection(kind, offset, indices)?;
         }
 
         queue!(self.stdout, EnableLineWrap)?;
@@ -280,7 +295,9 @@ impl State {
                 self.stdout,
                 MoveToColumn(0),
                 Clear(ClearType::CurrentLine),
-                PrintStyledContent(format!("{title} ({num_selected} selected):").cyan()),
+                PrintStyledContent(
+                    format!("{title} ({num_selected} selected):").cyan()
+                ),
                 MoveToNextLine(1)
             )?;
 
@@ -295,24 +312,31 @@ impl State {
         Ok(deps.len())
     }
 
-    fn render_footer_actions(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    fn render_footer_actions(
+        &mut self,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         queue!(
             self.stdout,
             MoveToNextLine(2),
             Print(format!(
-                "Use {} to navigate, {} to select all, {} to invert, {} to select/deselect, {} to update, {}/{} to exit",
+                "Use {} to navigate, {} to select all, {} to invert, {} to \
+                 select/deselect, {} to update, {}/{} to exit",
                 "arrow keys/hjkl".cyan(),
                 "<a>".cyan(),
                 "<i>".cyan(),
                 "<space>".cyan(),
                 "<enter>".cyan(),
-                "<esc>".cyan(), "<q>".cyan()
+                "<esc>".cyan(),
+                "<q>".cyan()
             ))
         )?;
         Ok(())
     }
 
-    fn render_dependency(&mut self, i: usize) -> Result<(), Box<dyn std::error::Error>> {
+    fn render_dependency(
+        &mut self,
+        i: usize,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let Dependency {
             name,
             current_version,
@@ -325,25 +349,31 @@ impl State {
             ..
         } = &self.outdated_deps.dependencies[i];
 
-        let name_spacing = " ".repeat(self.longest_attributes.name - name.len());
-        let current_version_spacing =
-            " ".repeat(self.longest_attributes.current_version - current_version.len());
-        let latest_version_spacing =
-            " ".repeat(self.longest_attributes.latest_version - latest_version.len());
+        let name_spacing =
+            " ".repeat(self.longest_attributes.name - name.len());
+        let current_version_spacing = " ".repeat(
+            self.longest_attributes.current_version - current_version.len(),
+        );
+        let latest_version_spacing = " ".repeat(
+            self.longest_attributes.latest_version - latest_version.len(),
+        );
 
         let bullet = if self.selected[i] { "●" } else { "○" };
 
-        let latest_version_date = get_date_from_datetime_string(latest_version_date.as_deref())
-            .unwrap_or("          ")
-            .italic()
-            .dim();
-        let current_version_date = get_date_from_datetime_string(current_version_date.as_deref())
-            .unwrap_or("          ")
-            .italic()
-            .dim();
+        let _latest_version_date =
+            get_date_from_datetime_string(latest_version_date.as_deref())
+                .unwrap_or("          ")
+                .italic()
+                .dim();
+        let _current_version_date =
+            get_date_from_datetime_string(current_version_date.as_deref())
+                .unwrap_or("          ")
+                .italic()
+                .dim();
 
         let name = name.clone().bold();
-        let mut repository = repository.as_deref().unwrap_or("none").underline_black();
+        let mut repository =
+            repository.as_deref().unwrap_or("none").underline_black();
         if self.theme == Theme::Dark {
             repository = repository.underline_white();
         }
@@ -357,8 +387,10 @@ impl State {
                 workspace_member.to_string()
             };
 
-            let workspace_member_spacing =
-                " ".repeat(self.longest_attributes.workspace_member - workspace_member.len());
+            let workspace_member_spacing = " ".repeat(
+                self.longest_attributes.workspace_member
+                    - workspace_member.len(),
+            );
             format!("{workspace_member}{workspace_member_spacing}  ")
                 .blue()
                 .italic()
@@ -377,7 +409,10 @@ impl State {
         }
 
         let row = format!(
-            "{bullet} {name}{name_spacing}  {workspace_member}{current_version_date} {current_version}{current_version_spacing} -> {latest_version_date} {latest_version}{latest_version_spacing}  {repository} - {description}",
+            "{bullet} {name}{name_spacing}  {workspace_member} \
+             {current_version}{current_version_spacing} -> \
+             {latest_version}{latest_version_spacing}  {repository} - \
+             {description}",
         );
 
         let colored_row = if i == self.cursor_location {
@@ -397,7 +432,9 @@ impl State {
     }
 }
 
-fn get_date_from_datetime_string(datetime_string: Option<&str>) -> Option<&str> {
+fn get_date_from_datetime_string(
+    datetime_string: Option<&str>,
+) -> Option<&str> {
     datetime_string
         .and_then(|s| s.split_once('T'))
         .map(|(date, _)| date)

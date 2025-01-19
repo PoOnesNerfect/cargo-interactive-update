@@ -1,74 +1,31 @@
 use curl::easy::{Easy, List};
 
-use crate::cargo::CargoDependency;
+use crate::{cargo::CargoDependency, dependency::Dependency};
 
-#[derive(Debug)]
-pub struct CratesIoResponse {
-    pub repository: Option<String>,
-    pub description: Option<String>,
-    pub latest_version: String,
-    pub latest_version_date: Option<String>,
-    pub current_version_date: Option<String>,
+pub fn fetch_package_from_crates_io(
+    dep: CargoDependency,
+    workspace_member: Option<String>,
+    workspace_path: Option<String>,
+) -> Option<Dependency> {
+    let res = fetch_latest_version(&dep).unwrap()?;
+
+    Some(Dependency {
+        name: dep.name,
+        current_version: dep.version,
+        latest_version: res.latest_version,
+        repository: res.repository,
+        description: res.description,
+        kind: dep.kind,
+        workspace_member,
+        workspace_path,
+        latest_version_date: res.latest_version_date,
+        current_version_date: res.current_version_date,
+    })
 }
 
-fn get_string_from_value(
-    value: Option<&serde_json::Map<String, serde_json::Value>>,
-    key: &str,
-) -> Option<String> {
-    Some(
-        value?
-            .get(key)?
-            .as_str()?
-            .trim()
-            .split('\n')
-            .collect::<Vec<&str>>()
-            .join(" "),
-    )
-}
-
-fn get_field_from_versions(
-    versions: Option<&Vec<serde_json::Value>>,
-    version: &str,
-    key: &str,
-) -> Option<String> {
-    Some(
-        versions?
-            .iter()
-            .find(|v| v.get("num").and_then(|v| v.as_str()).unwrap_or("") == version)?
-            .get(key)?
-            .as_str()?
-            .trim()
-            .to_string(),
-    )
-}
-
-impl CratesIoResponse {
-    fn from_value(value: serde_json::Value, version: &str) -> Option<Self> {
-        let data = value.get("crate").and_then(|c| c.as_object());
-        let versions = value.get("versions").and_then(|c| c.as_array());
-
-        let latest_version = get_string_from_value(data, "max_stable_version")?;
-
-        Some(Self {
-            repository: get_string_from_value(data, "repository"),
-            description: get_string_from_value(data, "description"),
-            latest_version_date: get_field_from_versions(versions, &latest_version, "updated_at"),
-            current_version_date: get_field_from_versions(versions, version, "updated_at"),
-            latest_version,
-        })
-    }
-}
-
-pub fn get_latest_version(
-    CargoDependency {
-        name,
-        version,
-        package,
-        ..
-    }: &CargoDependency,
+fn fetch_latest_version(
+    CargoDependency { version, package, .. }: &CargoDependency,
 ) -> Result<Option<CratesIoResponse>, Box<dyn std::error::Error>> {
-    let package = package.as_ref().unwrap_or(name);
-
     let mut headers = List::new();
 
     let package_name = env!("CARGO_PKG_NAME");
@@ -104,6 +61,73 @@ pub fn get_latest_version(
     };
 
     Ok(CratesIoResponse::from_value(response, version))
+}
+
+#[derive(Debug)]
+pub struct CratesIoResponse {
+    pub repository: Option<String>,
+    pub description: Option<String>,
+    pub latest_version: String,
+    pub latest_version_date: Option<String>,
+    pub current_version_date: Option<String>,
+}
+
+impl CratesIoResponse {
+    fn from_value(value: serde_json::Value, version: &str) -> Option<Self> {
+        let data = value.get("crate").and_then(|c| c.as_object());
+        let versions = value.get("versions").and_then(|c| c.as_array());
+
+        let latest_version = get_string_from_value(data, "max_stable_version")?;
+
+        Some(Self {
+            repository: get_string_from_value(data, "repository"),
+            description: get_string_from_value(data, "description"),
+            latest_version_date: get_field_from_versions(
+                versions,
+                &latest_version,
+                "updated_at",
+            ),
+            current_version_date: get_field_from_versions(
+                versions,
+                version,
+                "updated_at",
+            ),
+            latest_version,
+        })
+    }
+}
+
+fn get_string_from_value(
+    value: Option<&serde_json::Map<String, serde_json::Value>>,
+    key: &str,
+) -> Option<String> {
+    Some(
+        value?
+            .get(key)?
+            .as_str()?
+            .trim()
+            .split('\n')
+            .collect::<Vec<&str>>()
+            .join(" "),
+    )
+}
+
+fn get_field_from_versions(
+    versions: Option<&Vec<serde_json::Value>>,
+    version: &str,
+    key: &str,
+) -> Option<String> {
+    Some(
+        versions?
+            .iter()
+            .find(|v| {
+                v.get("num").and_then(|v| v.as_str()).unwrap_or("") == version
+            })?
+            .get(key)?
+            .as_str()?
+            .trim()
+            .to_string(),
+    )
 }
 
 #[cfg(test)]
