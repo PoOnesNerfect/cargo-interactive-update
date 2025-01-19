@@ -32,6 +32,7 @@ struct Longest {
     name: usize,
     current_version: usize,
     latest_version: usize,
+    workspace_member: usize,
 }
 
 impl Longest {
@@ -39,17 +40,21 @@ impl Longest {
         let mut name = 0;
         let mut current_version = 0;
         let mut latest_version = 0;
+        let mut workspace_member = 0;
 
         for dep in dependencies.iter() {
             name = name.max(dep.name.len());
             current_version = current_version.max(dep.current_version.len());
             latest_version = latest_version.max(dep.latest_version.len());
+            workspace_member =
+                workspace_member.max(dep.workspace_member.as_ref().map_or(0, |s| s.len()));
         }
 
         Longest {
             name,
             current_version,
             latest_version,
+            workspace_member,
         }
     }
 }
@@ -106,13 +111,13 @@ impl State {
                 (KeyCode::Left | KeyCode::Char('h') | KeyCode::BackTab, _) => {
                     let prev_i = self.cursor_location;
 
-                    self.cursor_location = self.prev_section_location();
+                    self.cursor_location = self.change_section(false);
                     self.render_dependencies(&[prev_i, self.cursor_location])?;
                 }
                 (KeyCode::Right | KeyCode::Char('l') | KeyCode::Tab, _) => {
                     let prev_i = self.cursor_location;
 
-                    self.cursor_location = self.next_section_location();
+                    self.cursor_location = self.change_section(true);
                     self.render_dependencies(&[prev_i, self.cursor_location])?;
                 }
                 (KeyCode::Char(' '), _) => {
@@ -124,11 +129,8 @@ impl State {
                     return Ok(Event::UpdateDependencies);
                 }
                 (KeyCode::Char('a'), _) => {
-                    if self.selected.iter().all(|s| *s) {
-                        self.selected = vec![false; self.outdated_deps.len()];
-                    } else {
-                        self.selected = vec![true; self.outdated_deps.len()];
-                    }
+                    let all_selected = self.selected.iter().all(|s| *s);
+                    self.selected = vec![!all_selected; self.outdated_deps.len()];
                     self.render_dependencies(&[])?;
                 }
                 (KeyCode::Char('i'), _) => {
@@ -148,59 +150,34 @@ impl State {
         Ok(Event::HandleKeyboard)
     }
 
-    fn next_section_location(&self) -> usize {
-        let curr_kind = self.outdated_deps.0[self.cursor_location].kind;
-
-        let i = self
-            .outdated_deps
-            .0
-            .iter()
-            .enumerate()
-            .skip_while(|(_, d)| d.kind != curr_kind)
-            .skip_while(|(_, d)| d.kind == curr_kind)
-            .map(|(i, _)| i)
-            .next();
-
-        if let Some(i) = i {
-            i
-        } else if self.outdated_deps.0[0].kind == self.outdated_deps.0[self.cursor_location].kind {
-            self.cursor_location
-        } else {
-            0
+    fn change_section(&mut self, next: bool) -> usize {
+        let cursor_kind = self.outdated_deps.dependencies[self.cursor_location].kind;
+        let mut other_kind = None;
+        let mut other_index = self.cursor_location;
+        for i in 1..self.outdated_deps.len() {
+            let index = if next {
+                (self.cursor_location + i) % self.outdated_deps.len()
+            } else {
+                if i > self.cursor_location {
+                    self.outdated_deps.len() + self.cursor_location - i
+                } else {
+                    self.cursor_location - i
+                }
+            };
+            let curr_kind = self.outdated_deps.dependencies[index].kind;
+            if curr_kind != cursor_kind {
+                if other_kind.is_none() {
+                    other_kind = Some(curr_kind);
+                    other_index = index;
+                } else {
+                    other_index = index;
+                }
+            }
+            if other_kind.is_some() && (next || other_kind != Some(curr_kind)) {
+                break;
+            }
         }
-    }
-
-    fn prev_section_location(&self) -> usize {
-        let curr_kind = self.outdated_deps.0[self.cursor_location].kind;
-
-        let mut iter = self.outdated_deps.0[..self.cursor_location]
-            .iter()
-            .enumerate()
-            .rev()
-            .skip_while(|(_, d)| d.kind == curr_kind);
-
-        if let Some((i_, d_)) = iter.next() {
-            iter.take_while(|(_, d)| d.kind == d_.kind)
-                .last()
-                .map(|(i, _)| i)
-                .unwrap_or(i_)
-        } else if self.outdated_deps.0.last().unwrap().kind
-            == self.outdated_deps.0[self.cursor_location].kind
-        {
-            self.cursor_location
-        } else {
-            let last_kind = self.outdated_deps.0.last().unwrap().kind;
-
-            self.outdated_deps
-                .0
-                .iter()
-                .enumerate()
-                .rev()
-                .take_while(|(_, d)| d.kind == last_kind)
-                .last()
-                .unwrap()
-                .0
-        }
+        other_index
     }
 
     fn reset_terminal(&mut self) -> Result<(), Box<dyn std::error::Error>> {
@@ -210,14 +187,8 @@ impl State {
     }
 
     pub fn selected_dependencies(self) -> Dependencies {
-        Dependencies::new(
-            self.outdated_deps
-                .into_iter()
-                .zip(self.selected.iter())
-                .filter(|(_, s)| **s)
-                .map(|(d, _)| d)
-                .collect(),
-        )
+        self.outdated_deps
+            .filter_selected_dependencies(self.selected)
     }
 
     fn render_header(&mut self) -> Result<(), Box<dyn std::error::Error>> {
@@ -348,8 +319,11 @@ impl State {
             latest_version,
             repository,
             description,
+            latest_version_date,
+            current_version_date,
+            workspace_member,
             ..
-        } = &self.outdated_deps.0[i];
+        } = &self.outdated_deps.dependencies[i];
 
         let name_spacing = " ".repeat(self.longest_attributes.name - name.len());
         let current_version_spacing =
@@ -359,6 +333,15 @@ impl State {
 
         let bullet = if self.selected[i] { "●" } else { "○" };
 
+        let latest_version_date = get_date_from_datetime_string(latest_version_date.as_deref())
+            .unwrap_or("          ")
+            .italic()
+            .dim();
+        let current_version_date = get_date_from_datetime_string(current_version_date.as_deref())
+            .unwrap_or("          ")
+            .italic()
+            .dim();
+
         let name = name.clone().bold();
         let mut repository = repository.as_deref().unwrap_or("none").underline_black();
         if self.theme == Theme::Dark {
@@ -366,6 +349,22 @@ impl State {
         }
 
         let description = description.as_deref().unwrap_or("").dim();
+        let workspace_member = if self.outdated_deps.has_workspace_members() {
+            let workspace_member = workspace_member.as_deref().unwrap_or("");
+            let workspace_member = if workspace_member.is_empty() {
+                "-".to_string()
+            } else {
+                workspace_member.to_string()
+            };
+
+            let workspace_member_spacing =
+                " ".repeat(self.longest_attributes.workspace_member - workspace_member.len());
+            format!("{workspace_member}{workspace_member_spacing}  ")
+                .blue()
+                .italic()
+        } else {
+            "".to_string().blue().italic()
+        };
 
         let mut current_version = current_version.clone().bold().black();
         if self.theme == Theme::Dark {
@@ -378,7 +377,7 @@ impl State {
         }
 
         let row = format!(
-            "{bullet} {name}{name_spacing}  {current_version}{current_version_spacing} -> {latest_version}{latest_version_spacing}  {repository} - {description}"
+            "{bullet} {name}{name_spacing}  {workspace_member}{current_version_date} {current_version}{current_version_spacing} -> {latest_version_date} {latest_version}{latest_version_spacing}  {repository} - {description}",
         );
 
         let colored_row = if i == self.cursor_location {
@@ -404,5 +403,70 @@ fn get_dependencies_subsection_title(kind: DependencyKind) -> &'static str {
         DependencyKind::Dev => "Dev dependencies",
         DependencyKind::Build => "Build dependencies",
         DependencyKind::Workspace => "Workspace dependencies",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_longest_attributes() {
+        let dependencies = Dependencies::new(
+            vec![
+                Dependency {
+                    name: "short".to_string(),
+                    current_version: "1".to_string(),
+                    latest_version: "2".to_string(),
+                    ..Default::default()
+                },
+                Dependency {
+                    name: "longer dependency name".to_string(),
+                    current_version: "1.2.11".to_string(),
+                    latest_version: "2.3.4".to_string(),
+                    workspace_member: Some("some_member".to_string()),
+                    ..Default::default()
+                },
+            ],
+            std::collections::HashMap::new(),
+        );
+        let longest = Longest::get_longest_attributes(&dependencies);
+        assert_eq!(longest.name, 22);
+        assert_eq!(longest.current_version, 6);
+        assert_eq!(longest.latest_version, 5);
+        assert_eq!(longest.workspace_member, 11);
+    }
+
+    #[test]
+    fn test_get_date_from_datetime_string() {
+        assert_eq!(
+            get_date_from_datetime_string(Some("2024-01-01T00:00:00Z")),
+            Some("2024-01-01")
+        );
+        assert_eq!(
+            get_date_from_datetime_string(Some("2024-01-0100:00:00Z")),
+            None
+        );
+        assert_eq!(get_date_from_datetime_string(None), None);
+    }
+
+    #[test]
+    fn test_get_dependencies_subsection_title() {
+        assert_eq!(
+            get_dependencies_subsection_title(DependencyKind::Normal),
+            "Dependencies"
+        );
+        assert_eq!(
+            get_dependencies_subsection_title(DependencyKind::Dev),
+            "Dev dependencies"
+        );
+        assert_eq!(
+            get_dependencies_subsection_title(DependencyKind::Build),
+            "Build dependencies"
+        );
+        assert_eq!(
+            get_dependencies_subsection_title(DependencyKind::Workspace),
+            "Workspace dependencies"
+        );
     }
 }

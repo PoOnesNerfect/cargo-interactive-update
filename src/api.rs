@@ -35,6 +35,37 @@ pub struct CratesIoResponse {
     pub current_version_date: Option<String>,
 }
 
+fn get_string_from_value(
+    value: Option<&serde_json::Map<String, serde_json::Value>>,
+    key: &str,
+) -> Option<String> {
+    Some(
+        value?
+            .get(key)?
+            .as_str()?
+            .trim()
+            .split('\n')
+            .collect::<Vec<&str>>()
+            .join(" "),
+    )
+}
+
+fn get_field_from_versions(
+    versions: Option<&Vec<serde_json::Value>>,
+    version: &str,
+    key: &str,
+) -> Option<String> {
+    Some(
+        versions?
+            .iter()
+            .find(|v| v.get("num").and_then(|v| v.as_str()).unwrap_or("") == version)?
+            .get(key)?
+            .as_str()?
+            .trim()
+            .to_string(),
+    )
+}
+
 impl CratesIoResponse {
     fn from_value(value: serde_json::Value, version: &str) -> Option<Self> {
         let data = value.get("crate").and_then(|c| c.as_object());
@@ -175,12 +206,8 @@ mod tests {
     fn test_crates_io_empty_response() {
         let response = serde_json::json!({});
 
-        let response = CratesIoResponse::from_value(response, "0.1.0").unwrap();
+        let ret = CratesIoResponse::from_value(response, "0.1.0");
 
-        assert_eq!(response.repository, None);
-        assert_eq!(response.description, None);
-        assert_eq!(response.latest_version, "0.1.0");
-        assert_eq!(response.latest_version_date, None);
-        assert_eq!(response.current_version_date, None);
+        assert!(ret.is_none());
     }
 }
