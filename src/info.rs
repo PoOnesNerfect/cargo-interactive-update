@@ -1,32 +1,38 @@
 /// Implementation from cargo-info command source code.
-/// Used to get package info from index and is slower than using cargo-search,
-/// but it does not require credentials from private registries.
-/// https://github.com/rust-lang/cargo/blob/master/src/cargo/ops/registry/info/mod.rs
+/// Used to get package info from index and is slower than using
+/// cargo-search, but it does not require credentials from private
+/// registries. https://github.com/rust-lang/cargo/blob/master/src/cargo/ops/registry/info/mod.rs
 use std::collections::HashSet;
 
 use anyhow::bail;
-use cargo::core::registry::PackageRegistry;
-use cargo::core::PackageIdSpecQuery;
-use cargo::core::{Package, PackageId, PackageIdSpec, Registry, SourceId, Workspace};
-use cargo::ops::RegistryOrIndex;
-use cargo::sources::source::{QueryKind, Source};
-use cargo::sources::IndexSummary;
-use cargo::sources::SourceConfigMap;
-use cargo::util::cache_lock::CacheLockMode;
-use cargo::util::command_prelude::root_manifest;
-use cargo::{ops, CargoResult, GlobalContext};
+use cargo::{
+    core::{
+        registry::PackageRegistry, Package, PackageId, PackageIdSpec,
+        PackageIdSpecQuery, Registry, SourceId, Workspace,
+    },
+    ops,
+    ops::RegistryOrIndex,
+    sources::{
+        source::{QueryKind, Source},
+        IndexSummary, SourceConfigMap,
+    },
+    util::{cache_lock::CacheLockMode, command_prelude::root_manifest},
+    CargoResult, GlobalContext,
+};
 use cargo_util_schemas::core::PartialVersion;
 use semver::Version;
 
-use crate::cargo::CargoDependency;
-use crate::dependency::Dependency;
+use crate::{cargo::CargoDependency, dependency::Dependency};
 
-pub fn fetch_package_from_source(dep: CargoDependency) -> CargoResult<Option<Dependency>> {
+pub fn fetch_package_from_source(
+    dep: CargoDependency,
+    workspace_member: Option<String>,
+    workspace_path: Option<String>,
+) -> CargoResult<Option<Dependency>> {
     let CargoDependency {
         name,
         package,
         version,
-        path,
         source,
         ..
     } = dep;
@@ -34,38 +40,46 @@ pub fn fetch_package_from_source(dep: CargoDependency) -> CargoResult<Option<Dep
     let mut gctx = GlobalContext::default()?;
     gctx.configure(0, true, None, false, false, false, &None, &[], &[])?;
 
-    let spec = PackageIdSpec::parse(&format!("{}#{}", source.as_ref().unwrap(), package))?;
+    let spec = PackageIdSpec::parse(&format!(
+        "{}#{}",
+        source.as_ref().unwrap(),
+        package
+    ))?;
 
     let Some((package, latest_version)) = info(&gctx, &spec)? else {
         return Ok(None);
     };
 
-    let parsed_current_version = Version::parse(&version).unwrap();
-
-    if parsed_current_version < latest_version {
-        Ok(Some(Dependency {
-            name,
-            current_version: version.clone(),
-            latest_version: latest_version.to_string(),
-            path: path.clone(),
-            repository: package.manifest().metadata().repository.clone(),
-            description: package
-                .manifest()
-                .metadata()
-                .description
-                .as_ref()
-                .map(|d| d.lines().next().unwrap().to_owned()),
-            kind: dep.kind,
-        }))
-    } else {
-        Ok(None)
-    }
+    Ok(Some(Dependency {
+        name,
+        current_version: version.clone(),
+        latest_version: latest_version.to_string(),
+        repository: package.manifest().metadata().repository.clone(),
+        description: package
+            .manifest()
+            .metadata()
+            .description
+            .as_ref()
+            .map(|d| d.lines().next().unwrap().to_owned()),
+        kind: dep.kind,
+        workspace_member,
+        workspace_path,
+        latest_version_date: None,
+        current_version_date: None,
+    }))
 }
 
-pub fn info(gctx: &GlobalContext, spec: &PackageIdSpec) -> CargoResult<Option<(Package, Version)>> {
-    let mut registry = PackageRegistry::new_with_source_config(gctx, SourceConfigMap::new(gctx)?)?;
+pub fn info(
+    gctx: &GlobalContext,
+    spec: &PackageIdSpec,
+) -> CargoResult<Option<(Package, Version)>> {
+    let mut registry = PackageRegistry::new_with_source_config(
+        gctx,
+        SourceConfigMap::new(gctx)?,
+    )?;
     // Make sure we get the lock before we download anything.
-    let _lock = gctx.acquire_package_cache_lock(CacheLockMode::DownloadExclusive)?;
+    let _lock =
+        gctx.acquire_package_cache_lock(CacheLockMode::DownloadExclusive)?;
     registry.lock_patches();
 
     // If we can find it in workspace, use it as a specific version.
@@ -80,9 +94,12 @@ pub fn info(gctx: &GlobalContext, spec: &PackageIdSpec) -> CargoResult<Option<(P
             .and_then(|path| ws.members().find(|p| p.manifest_path() == path))
     });
 
-    let (mut package_id, _is_member) = find_pkgid_in_ws(nearest_package, ws.as_ref(), spec);
-    let (use_package_source_id, source_ids) = get_source_id(gctx, None, package_id)?;
-    // If we don't use the package's source, we need to query the package ID from the specified registry.
+    let (mut package_id, _is_member) =
+        find_pkgid_in_ws(nearest_package, ws.as_ref(), spec);
+    let (use_package_source_id, source_ids) =
+        get_source_id(gctx, None, package_id)?;
+    // If we don't use the package's source, we need to query the package ID
+    // from the specified registry.
     if !use_package_source_id {
         package_id = None;
     }
@@ -90,13 +107,15 @@ pub fn info(gctx: &GlobalContext, spec: &PackageIdSpec) -> CargoResult<Option<(P
     let msrv_from_nearest_manifest_path_or_ws =
         try_get_msrv_from_nearest_manifest_or_ws(nearest_package, ws.as_ref());
     // If the workspace does not have a specific Rust version,
-    // or if the command is not called within the workspace, then fallback to the global Rust version.
+    // or if the command is not called within the workspace, then fallback to
+    // the global Rust version.
     let rustc_version = match msrv_from_nearest_manifest_path_or_ws {
         Some(msrv) => msrv,
         None => {
             let current_rustc = gctx.load_global_rustc(ws.as_ref())?.version;
             // Remove any pre-release identifiers for easier comparison.
-            // Otherwise, the MSRV check will fail if the current Rust version is a nightly or beta version.
+            // Otherwise, the MSRV check will fail if the current Rust version
+            // is a nightly or beta version.
             semver::Version::new(
                 current_rustc.major,
                 current_rustc.minor,
@@ -105,14 +124,20 @@ pub fn info(gctx: &GlobalContext, spec: &PackageIdSpec) -> CargoResult<Option<(P
             .into()
         }
     };
-    // // Only suggest cargo tree command when the package is not a workspace member.
-    // // For workspace members, `cargo tree --package <SPEC> --invert` is useless. It only prints itself.
+    // // Only suggest cargo tree command when the package is not a workspace
+    // member. // For workspace members, `cargo tree --package <SPEC>
+    // --invert` is useless. It only prints itself.
     // let suggest_cargo_tree_command = package_id.is_some() && !is_member;
 
     let summaries = query_summaries(spec, &mut registry, &source_ids)?;
     let package_id = match package_id {
         Some(id) => id,
-        None => find_pkgid_in_summaries(&summaries, spec, &rustc_version, &source_ids)?,
+        None => find_pkgid_in_summaries(
+            &summaries,
+            spec,
+            &rustc_version,
+            &source_ids,
+        )?,
     };
 
     let package_set = registry.get(&[package_id])?;
@@ -202,8 +227,8 @@ fn find_pkgid_in_summaries(
             match (s1_matches, s2_matches) {
                 (true, false) => std::cmp::Ordering::Greater,
                 (false, true) => std::cmp::Ordering::Less,
-                // If both summaries match the current Rust version or neither do, try to
-                // pick the latest version.
+                // If both summaries match the current Rust version or neither
+                // do, try to pick the latest version.
                 _ => s1.package_id().version().cmp(s2.package_id().version()),
             }
         });
@@ -226,7 +251,8 @@ fn query_summaries(
     source_ids: &RegistrySourceIds,
 ) -> CargoResult<Vec<IndexSummary>> {
     // Query without version requirement to get all index summaries.
-    let dep = cargo::core::Dependency::parse(spec.name(), None, source_ids.original)?;
+    let dep =
+        cargo::core::Dependency::parse(spec.name(), None, source_ids.original)?;
     loop {
         // Exact to avoid returning all for path/git
         match registry.query_vec(&dep, QueryKind::Exact) {
@@ -238,14 +264,15 @@ fn query_summaries(
     }
 }
 
+#[allow(dead_code)]
 struct RegistrySourceIds {
     /// Use when looking up the auth token, or writing out `Cargo.lock`
     original: SourceId,
     /// Use when interacting with the source (querying / publishing , etc)
     ///
-    /// The source for crates.io may be replaced by a built-in source for accessing crates.io with
-    /// the sparse protocol, or a source for the testing framework (when the replace_crates_io
-    /// function is used)
+    /// The source for crates.io may be replaced by a built-in source for
+    /// accessing crates.io with the sparse protocol, or a source for the
+    /// testing framework (when the replace_crates_io function is used)
     ///
     /// User-defined source replacement is not applied.
     /// Note: This will be utilized when interfacing with the registry API.
@@ -260,12 +287,18 @@ fn get_source_id(
     let (use_package_source_id, sid) = match (&reg_or_index, package_id) {
         (None, Some(package_id)) => (true, package_id.source_id()),
         (None, None) => (false, SourceId::crates_io(gctx)?),
-        (Some(RegistryOrIndex::Index(url)), None) => (false, SourceId::for_registry(url)?),
-        (Some(RegistryOrIndex::Registry(r)), None) => (false, SourceId::alt_registry(gctx, r)?),
+        (Some(RegistryOrIndex::Index(url)), None) => {
+            (false, SourceId::for_registry(url)?)
+        }
+        (Some(RegistryOrIndex::Registry(r)), None) => {
+            (false, SourceId::alt_registry(gctx, r)?)
+        }
         (Some(reg_or_index), Some(package_id)) => {
             let sid = match reg_or_index {
                 RegistryOrIndex::Index(url) => SourceId::for_registry(url)?,
-                RegistryOrIndex::Registry(r) => SourceId::alt_registry(gctx, r)?,
+                RegistryOrIndex::Registry(r) => {
+                    SourceId::alt_registry(gctx, r)?
+                }
             };
             let package_source_id = package_id.source_id();
             // Same registry, use the package's source.
@@ -275,7 +308,8 @@ fn get_source_id(
                 let pkg_source_replacement_sid = SourceConfigMap::new(gctx)?
                     .load(package_source_id, &HashSet::new())?
                     .replaced_source_id();
-                // Use the package's source if the specified registry is a replacement for the package's source.
+                // Use the package's source if the specified registry is a
+                // replacement for the package's source.
                 if pkg_source_replacement_sid == sid {
                     (true, package_source_id)
                 } else {
@@ -291,22 +325,29 @@ fn get_source_id(
     let replacement_sid = SourceConfigMap::new(gctx)?
         .load(sid, &HashSet::new())?
         .replaced_source_id();
-    // Check if the user has configured source-replacement for the registry we are querying.
+    // Check if the user has configured source-replacement for the registry we
+    // are querying.
     if reg_or_index.is_none() && replacement_sid != builtin_replacement_sid {
-        // Neither --registry nor --index was passed and the user has configured source-replacement.
+        // Neither --registry nor --index was passed and the user has configured
+        // source-replacement.
         if let Some(replacement_name) = replacement_sid.alt_registry_key() {
-            bail!("crates-io is replaced with remote registry {replacement_name};\ninclude `--registry {replacement_name}` or `--registry crates-io`");
+            bail!(
+                "crates-io is replaced with remote registry \
+                 {replacement_name};\ninclude `--registry {replacement_name}` \
+                 or `--registry crates-io`"
+            );
         } else {
-            bail!("crates-io is replaced with non-remote-registry source {replacement_sid};\ninclude `--registry crates-io` to use crates.io");
+            bail!(
+                "crates-io is replaced with non-remote-registry source \
+                 {replacement_sid};\ninclude `--registry crates-io` to use \
+                 crates.io"
+            );
         }
     } else {
-        Ok((
-            use_package_source_id,
-            RegistrySourceIds {
-                original: sid,
-                replacement: builtin_replacement_sid,
-            },
-        ))
+        Ok((use_package_source_id, RegistrySourceIds {
+            original: sid,
+            replacement: builtin_replacement_sid,
+        }))
     }
 }
 
@@ -317,11 +358,15 @@ fn validate_locked_and_frozen_options(
     // Only in workspace, we can use --frozen or --locked.
     if !in_workspace {
         if gctx.locked() {
-            anyhow::bail!("the option `--locked` can only be used within a workspace");
+            anyhow::bail!(
+                "the option `--locked` can only be used within a workspace"
+            );
         }
 
         if gctx.frozen() {
-            anyhow::bail!("the option `--frozen` can only be used within a workspace");
+            anyhow::bail!(
+                "the option `--frozen` can only be used within a workspace"
+            );
         }
     }
     Ok(())
@@ -332,9 +377,13 @@ fn try_get_msrv_from_nearest_manifest_or_ws(
     ws: Option<&Workspace>,
 ) -> Option<PartialVersion> {
     // Try to get the MSRV from the nearest manifest.
-    let rust_version = nearest_package.and_then(|p| p.rust_version().map(|v| v.as_partial()));
-    // If the nearest manifest does not have a specific Rust version, try to get it from the workspace.
+    let rust_version =
+        nearest_package.and_then(|p| p.rust_version().map(|v| v.as_partial()));
+    // If the nearest manifest does not have a specific Rust version, try to get
+    // it from the workspace.
     rust_version
-        .or_else(|| ws.and_then(|ws| ws.lowest_rust_version().map(|v| v.as_partial())))
+        .or_else(|| {
+            ws.and_then(|ws| ws.lowest_rust_version().map(|v| v.as_partial()))
+        })
         .cloned()
 }

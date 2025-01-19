@@ -9,12 +9,13 @@ pub struct Dependency {
     pub name: String,
     pub current_version: String,
     pub latest_version: String,
-    pub path: Option<String>,
     pub repository: Option<String>,
     pub description: Option<String>,
     pub kind: DependencyKind,
     pub workspace_member: Option<String>,
     pub workspace_path: Option<String>,
+    pub latest_version_date: Option<String>,
+    pub current_version_date: Option<String>,
 }
 
 impl Ord for Dependency {

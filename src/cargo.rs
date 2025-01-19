@@ -1,23 +1,19 @@
-use std::{cmp::Ordering, env::current_dir};
+use std::{collections::HashMap, env::current_dir};
 
 use cargo_lock::Lockfile;
 use semver::{Version, VersionReq};
-use std::{collections::HashMap, env::current_dir};
 use toml_edit::{DocumentMut, Item, Value};
 
-use crate::dependency::{Dependencies, Dependency, DependencyKind};
+use crate::dependency::{Dependencies, DependencyKind};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CargoDependency {
     pub name: String,
     pub package: String,
     pub version: String,
-    pub version_req: VersionReq,
     pub kind: DependencyKind,
-    pub path: Option<String>,
     pub source: Option<String>,
 }
-
 
 impl Ord for CargoDependency {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
@@ -37,42 +33,10 @@ impl PartialOrd for CargoDependency {
     }
 }
 
-impl CargoDependency {
-    fn get_latest_version_wrapper(
-        &self,
-        workspace_member: Option<String>,
-        workspace_path: Option<String>,
-    ) -> Option<Dependency> {
-        let parsed_current_version_req = VersionReq::parse(&self.version).ok()?;
-
-        let response = api::get_latest_version(self).expect("Unable to reach crates.io")?;
-
-        let parsed_latest_version =
-            Version::parse(&response.latest_version).expect("Latest version is not a valid semver");
-
-        if !parsed_current_version_req.matches(&parsed_latest_version) {
-            Some(Dependency {
-                name: self.name.to_string(),
-                current_version: self.version.to_string(),
-                latest_version: response.latest_version,
-                repository: response.repository,
-                latest_version_date: response.latest_version_date,
-                current_version_date: response.current_version_date,
-                description: response.description,
-                kind: self.kind,
-                workspace_member,
-                workspace_path,
-            })
-        } else {
-            None
-        }
-    }
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct CargoDependencies {
     pub cargo_toml: DocumentMut,
-    package_name: String,
+    package_name: Option<String>,
     dependencies: Vec<CargoDependency>,
     workspace_members: HashMap<String, Box<CargoDependencies>>,
 }
@@ -82,7 +46,10 @@ impl CargoDependencies {
         Self::gather_dependencies_inner(".", &read_cargo_lock_file())
     }
 
-    fn gather_dependencies_inner(relative_path: &str, lockfile: &Lockfile) -> Self {
+    fn gather_dependencies_inner(
+        relative_path: &str,
+        lockfile: &Lockfile,
+    ) -> Self {
         let cargo_toml = read_cargo_file(relative_path);
         let package_name = get_package_name(&cargo_toml);
         let dependencies = get_cargo_dependencies(&cargo_toml, lockfile);
@@ -96,21 +63,32 @@ impl CargoDependencies {
         }
     }
 
-    pub fn into_parts(self, loader: crate::loading::Loader) -> (Dependencies, DocumentMut) {
-        let mut local_deps = Vec::new();
+    pub fn retrieve_outdated_dependencies(
+        self,
+        workspace_path: Option<String>,
+        loader: crate::loading::Loader,
+    ) -> Dependencies {
+        let Self {
+            package_name: workspace_member,
+            cargo_toml,
+            dependencies,
+            workspace_members,
+        } = self;
+
+        let mut cargo_toml_files = HashMap::new();
+        cargo_toml_files.insert(
+            workspace_path.clone().unwrap_or_else(|| ".".to_string()),
+            cargo_toml,
+        );
+
         let mut crates_io_deps = Vec::new();
         let mut alt_registry_deps = Vec::new();
 
-        for dep in self.dependencies {
-            if dep.path.is_some() {
-                local_deps.push(dep);
-            } else {
-                let source = dep
-                    .source
-                    .as_ref()
-                    .expect("source must exist for non-path deps");
-
-                if source == "registry+https://github.com/rust-lang/crates.io-index" {
+        for dep in dependencies {
+            if let Some(source) = dep.source.as_ref() {
+                if source
+                    == "registry+https://github.com/rust-lang/crates.io-index"
+                {
                     crates_io_deps.push(dep);
                 } else {
                     alt_registry_deps.push(dep);
@@ -118,12 +96,25 @@ impl CargoDependencies {
             }
         }
 
+        let mut ws_threads = Vec::new();
+        for (member, dependencies) in workspace_members.into_iter() {
+            let loader = loader.clone();
+            ws_threads.push(std::thread::spawn(move || {
+                dependencies
+                    .retrieve_outdated_dependencies(Some(member), loader)
+            }));
+        }
+
         let crates_io_threads = crates_io_deps
             .into_iter()
             .map(|d| {
+                let ws_member = workspace_member.clone();
+                let ws_path = workspace_path.clone();
                 let loader = loader.clone();
                 std::thread::spawn(move || {
-                    let ret = crate::api::fetch_package_from_crates_io(d);
+                    let ret = crate::api::fetch_package_from_crates_io(
+                        d, ws_member, ws_path,
+                    );
                     loader.inc_loader();
                     ret
                 })
@@ -133,82 +124,44 @@ impl CargoDependencies {
         let alt_threads = alt_registry_deps
             .into_iter()
             .map(|d| {
+                let ws_member = workspace_member.clone();
+                let ws_path = workspace_path.clone();
                 let loader = loader.clone();
                 std::thread::spawn(move || {
-                    let ret = crate::info::fetch_package_from_source(d);
+                    let ret = crate::info::fetch_package_from_source(
+                        d, ws_member, ws_path,
+                    );
                     loader.inc_loader();
                     ret
                 })
             })
             .collect::<Vec<_>>();
 
-        let mut deps = local_deps
+        let mut deps = crates_io_threads
             .into_iter()
-            .filter_map(|d| {
-                let ret = get_latest_version_from_path(d);
-                loader.inc_loader();
-                ret
+            .filter_map(|t| t.join().map(|e| e).ok().flatten())
+            .chain(alt_threads.into_iter().filter_map(|t| {
+                t.join().map(|e| e.ok()).ok().flatten().flatten()
+            }))
+            .filter(|e| {
+                let parsed_current_version = Version::parse(&e.current_version)
+                    .expect("Current version is not a valid semver");
+                let parsed_latest_version = Version::parse(&e.latest_version)
+                    .expect("Latest version is not a valid semver");
+
+                parsed_current_version < parsed_latest_version
             })
-            .chain(
-                crates_io_threads
-                    .into_iter()
-                    .filter_map(|t| t.join().map(|e| e).ok().flatten()),
-            )
-            .chain(
-                alt_threads
-                    .into_iter()
-                    .filter_map(|t| t.join().map(|e| e.ok()).ok().flatten().flatten()),
-            )
             .collect::<Vec<_>>();
+
+        ws_threads.into_iter().for_each(|h| {
+            let ws = h.join().unwrap();
+            deps.extend(ws.dependencies);
+            cargo_toml_files.extend(ws.cargo_toml_files);
+        });
+
         deps.sort();
 
-        (Dependencies::new(deps), self.cargo_toml)
-        }
-
-    pub fn retrieve_outdated_dependencies(self, workspace_path: Option<String>) -> Dependencies {
-        let mut direct_dependencies_threads = Vec::new();
-        let mut workspace_member_threads = Vec::new();
-        let mut cargo_toml_files = HashMap::new();
-
-        cargo_toml_files.insert(
-            workspace_path.clone().unwrap_or_else(|| ".".to_string()),
-            self.cargo_toml,
-        );
-        for dependency in self.dependencies.iter() {
-            let dependency = dependency.clone();
-            let package_name = self.package_name.to_string();
-            let workspace_path = workspace_path.clone();
-            direct_dependencies_threads.push(std::thread::spawn(move || {
-                dependency.get_latest_version_wrapper(Some(package_name), workspace_path)
-            }));
-        }
-
-        for (member, dependencies) in self.workspace_members.iter() {
-            let dependencies = dependencies.clone();
-            let member = member.clone();
-            workspace_member_threads.push(std::thread::spawn(move || {
-                dependencies.retrieve_outdated_dependencies(Some(member))
-            }));
-        }
-
-        let mut dependencies = direct_dependencies_threads
-            .into_iter()
-            .flat_map(|t| t.join())
-            .flatten()
-            .collect::<Vec<_>>();
-
-        workspace_member_threads
-            .into_iter()
-            .for_each(|workspace_dependencies| {
-                let _ = workspace_dependencies.join().map(|workspace_dependencies| {
-                    dependencies.extend(workspace_dependencies.dependencies);
-                    cargo_toml_files.extend(workspace_dependencies.cargo_toml_files);
-                });
-            });
-
-        dependencies.sort();
-
-        Dependencies::new(dependencies, cargo_toml_files)
+        Dependencies::new(deps, cargo_toml_files)
     }
 
     pub fn len(&self) -> usize {
@@ -221,18 +174,22 @@ impl CargoDependencies {
 }
 
 fn read_cargo_file(relative_path: &str) -> DocumentMut {
-    let cargo_toml_content = std::fs::read_to_string(format!("{relative_path}/Cargo.toml"))
-        .unwrap_or_else(|e| {
-            eprintln!("Unable to read Cargo.toml file: {}", e);
-            String::new()
-        });
+    let cargo_toml_content =
+        std::fs::read_to_string(format!("{relative_path}/Cargo.toml"))
+            .unwrap_or_else(|e| {
+                eprintln!("Unable to read Cargo.toml file: {}", e);
+                String::new()
+            });
 
     cargo_toml_content
         .parse()
         .expect("Unable to parse Cargo.toml file as TOML")
 }
 
-fn get_cargo_dependencies(cargo_toml: &DocumentMut, lockfile: &Lockfile) -> Vec<CargoDependency> {
+fn get_cargo_dependencies(
+    cargo_toml: &DocumentMut,
+    lockfile: &Lockfile,
+) -> Vec<CargoDependency> {
     let dependencies = extract_dependencies_from_sections(
         cargo_toml.get("dependencies"),
         DependencyKind::Normal,
@@ -306,37 +263,34 @@ fn extract_dependencies_from_sections(
             let (version_req, package) = match package_data {
                 Item::Value(Value::String(v)) => (v.value().to_string(), None),
                 Item::Value(Value::InlineTable(t)) => (
-                    t.get("version")?.as_str()?.to_string(),
+                    t.get("version")?.as_str()?.to_owned(),
                     t.get("package")
-                        .map(|e| e.as_str())
-                        .flatten()
-                        .unwrap_or(false)
+                        .map(|e| e.as_str().map(|e| e.to_owned()))
+                        .flatten(),
                 ),
                 Item::Table(t) => (
-                    t.get("version")?.as_str()?.to_string(),
+                    t.get("version")?.as_str()?.to_owned(),
                     t.get("package")
-                        .map(|e| e.as_str())
-                        .flatten()
-                        .unwrap_or(false)
+                        .map(|e| e.as_str().map(|e| e.to_owned()))
+                        .flatten(),
                 ),
                 _ => return None,
             };
 
-            let version_req =
-                VersionReq::parse(&version_req).expect("must be a valid version requirement");
+            let version_req = VersionReq::parse(&version_req)
+                .expect("must be a valid version requirement");
 
-            let package_name = package.as_ref().map(|e| e.as_str()).unwrap_or(name);
+            let package_name =
+                package.as_ref().map(|e| e.as_str()).unwrap_or(name);
 
-            let version = find_matching_package(&lockfile, package_name, &version_req)
-                .version
-                .to_string();
+            let package =
+                find_matching_package(&lockfile, package_name, &version_req);
 
             Some(CargoDependency {
                 name: name.to_owned(),
-                package,
-                version,
+                package: package.name.as_str().to_owned(),
+                version: package.version.to_string(),
                 kind,
-                path,
                 source: package.source.as_ref().map(|e| e.to_string()),
             })
         })
@@ -351,9 +305,12 @@ fn find_matching_package<'a>(
     let packages = &lockfile.packages;
 
     // index of the package instance
-    let Ok(i) = packages.binary_search_by_key(&package_name, |p| p.name.as_str()) else {
+    let Ok(i) =
+        packages.binary_search_by_key(&package_name, |p| p.name.as_str())
+    else {
         panic!(
-            "unable to find matching crate '{package_name} = \"{}\"' in Cargo.lock",
+            "unable to find matching crate '{package_name} = \"{}\"' in \
+             Cargo.lock",
             req
         );
     };
@@ -421,13 +378,11 @@ fn get_workspace_members(
         })
 }
 
-fn get_package_name(cargo_toml: &DocumentMut) -> String {
+fn get_package_name(cargo_toml: &DocumentMut) -> Option<String> {
     cargo_toml
         .get("package")
         .and_then(|i| i.get("name"))
-        .and_then(|i| i.as_str())
-        .unwrap_or_default()
-        .to_string()
+        .and_then(|i| i.as_str().map(|e| e.to_owned()))
 }
 
 #[cfg(test)]
@@ -494,27 +449,31 @@ mod tests {
         assert_eq!(dependencies.len(), 4);
         assert!(dependencies.contains(&CargoDependency {
             name: "dependencies".to_string(),
-            package: None,
+            package: "dependencies".to_string(),
             version: "0.1.2".to_string(),
-            kind: DependencyKind::Normal
+            kind: DependencyKind::Normal,
+            source: None
         }));
         assert!(dependencies.contains(&CargoDependency {
             name: "dev-dependencies".to_string(),
-            package: None,
+            package: "dev-dependencies".to_string(),
             version: "1.0.0".to_string(),
-            kind: DependencyKind::Dev
+            kind: DependencyKind::Dev,
+            source: None
         }));
         assert!(dependencies.contains(&CargoDependency {
             name: "build-dependencies".to_string(),
-            package: None,
+            package: "build-dependencies".to_string(),
             version: "2.1.0".to_string(),
-            kind: DependencyKind::Build
+            kind: DependencyKind::Build,
+            source: None
         }));
         assert!(dependencies.contains(&CargoDependency {
             name: "workspace-dependencies".to_string(),
-            package: None,
+            package: "workspace-dependencies".to_string(),
             version: "3.0.0".to_string(),
-            kind: DependencyKind::Workspace
+            kind: DependencyKind::Workspace,
+            source: None
         }));
     }
 
@@ -563,27 +522,31 @@ mod tests {
         assert_eq!(dependencies.len(), 4);
         assert!(dependencies.contains(&CargoDependency {
             name: "cargo-outdated".to_string(),
-            package: None,
+            package: "cargo-outdated".to_string(),
             version: "0.1.0".to_string(),
-            kind: DependencyKind::Normal
+            kind: DependencyKind::Normal,
+            source: None
         }));
         assert!(dependencies.contains(&CargoDependency {
             name: "other-dependency".to_string(),
-            package: None,
+            package: "other-dependency".to_string(),
             version: "1.0.0".to_string(),
-            kind: DependencyKind::Normal
+            kind: DependencyKind::Normal,
+            source: None
         }));
         assert!(dependencies.contains(&CargoDependency {
             name: "random-dependency".to_string(),
-            package: Some("other-name".to_string()),
+            package: "other-name".to_string(),
             version: "2.0.0".to_string(),
-            kind: DependencyKind::Normal
+            kind: DependencyKind::Normal,
+            source: None
         }));
         assert!(dependencies.contains(&CargoDependency {
             name: "serde".to_string(),
-            package: None,
+            package: "serde".to_string(),
             version: "1.0.0".to_string(),
-            kind: DependencyKind::Normal
+            kind: DependencyKind::Normal,
+            source: None
         }));
     }
 
@@ -594,8 +557,11 @@ mod tests {
         "#;
 
         let lockfile = Lockfile::from_str(CARGO_LOCK).unwrap();
-        let dependencies =
-            extract_dependencies_from_sections(None, DependencyKind::Normal, &lockfile);
+        let dependencies = extract_dependencies_from_sections(
+            None,
+            DependencyKind::Normal,
+            &lockfile,
+        );
         assert_eq!(dependencies.len(), 0);
     }
 
@@ -665,7 +631,7 @@ mod tests {
 
         let cargo_toml = CARGO_TOML.parse().unwrap();
         let package_name = get_package_name(&cargo_toml);
-        assert_eq!(package_name, "");
+        assert_eq!(package_name, None);
     }
 
     #[test]
@@ -677,7 +643,6 @@ mod tests {
 
         let cargo_toml = CARGO_TOML.parse().unwrap();
         let package_name = get_package_name(&cargo_toml);
-        assert_eq!(package_name, "cargo-outdated");
+        assert_eq!(package_name.unwrap(), "cargo-outdated");
     }
 }
->>>>>>> bug-fixes

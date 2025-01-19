@@ -19,13 +19,20 @@ struct LoaderInner {
     total_deps: usize,
     loaded_deps: usize,
     stdout: Stdout,
+    cols: usize,
+    digits: u8,
 }
 
-pub fn init_loader(total_deps: usize) -> Result<Loader, Box<dyn std::error::Error>> {
+pub fn init_loader(
+    total_deps: usize,
+) -> Result<Loader, Box<dyn std::error::Error>> {
     let mut state = LoaderInner {
         total_deps,
         loaded_deps: 0,
         stdout: stdout(),
+        cols: total_deps
+            .min(crossterm::terminal::size().unwrap().0 as usize * 4 / 5),
+        digits: length(total_deps as u32, 10) as u8,
     };
 
     enable_raw_mode()?;
@@ -33,12 +40,13 @@ pub fn init_loader(total_deps: usize) -> Result<Loader, Box<dyn std::error::Erro
     queue!(
         state.stdout,
         MoveTo(0, 0),
-        Print("Scanning dependencies"),
-        MoveToNextLine(1)
-    )?;
-    queue!(
-        state.stdout,
-        Print(format!("[{}] 0/{} 0%", "-".repeat(total_deps), total_deps))
+        Print(format!(
+            "Scanning  {:>width$}/{total_deps}   0%",
+            0,
+            width = state.digits as usize
+        )),
+        MoveToNextLine(1),
+        Print(format!("[{}]", "-".repeat(state.cols),))
     )?;
 
     state.stdout.flush()?;
@@ -53,21 +61,42 @@ impl Loader {
             total_deps,
             loaded_deps,
             stdout,
+            cols,
+            digits,
         } = &mut state.deref_mut();
-
         *loaded_deps += 1;
 
-        let perc = (100. * *loaded_deps as f32 / *total_deps as f32) as u8;
+        let index = 10000 * *cols * (*loaded_deps - 1) / *total_deps / 10000;
+        let perc = 100 * *loaded_deps / *total_deps;
 
         queue!(
             stdout,
-            MoveToColumn(*loaded_deps as u16),
-            Print("="),
-            MoveToColumn(3 + *total_deps as u16),
-            Print(format!("{loaded_deps}/{total_deps} {perc}%",))
+            MoveTo(10, 0),
+            Print(format!(
+                "{:>width$}/{total_deps} {perc:>3}%",
+                loaded_deps,
+                width = *digits as usize
+            )),
+            MoveToNextLine(1),
+            MoveToColumn((index + 1) as u16),
+            Print("=")
         )
         .unwrap();
 
         stdout.flush().unwrap();
     }
+}
+
+fn length(n: u32, base: u32) -> u32 {
+    let mut power = base;
+    let mut count = 1;
+    while n >= power {
+        count += 1;
+        if let Some(new_power) = power.checked_mul(base) {
+            power = new_power;
+        } else {
+            break;
+        }
+    }
+    count
 }

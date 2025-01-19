@@ -21,7 +21,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args::CargoCli::InteractiveUpdate(args) = args::CargoCli::parse();
 
     let theme = std::thread::spawn(|| {
-        termbg::theme(Duration::from_millis(500)).unwrap_or(termbg::Theme::Light)
+        termbg::theme(Duration::from_millis(500))
+            .unwrap_or(termbg::Theme::Light)
     });
 
     let dependencies = cargo::CargoDependencies::gather_dependencies();
@@ -29,7 +30,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let loader = loading::init_loader(total_deps).unwrap();
 
-    let outdated_deps = dependencies.retrieve_outdated_dependencies(None, loader);
+    let outdated_deps =
+        dependencies.retrieve_outdated_dependencies(None, loader);
     let total_outdated_deps = outdated_deps.len();
 
     if total_outdated_deps == 0 {
@@ -46,7 +48,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    println!("{total_outdated_deps} out of the {total_deps} direct dependencies are outdated.");
+    println!(
+        "{total_outdated_deps} out of the {total_deps} direct dependencies \
+         are outdated."
+    );
 
     let mut state = cli::State::new(
         outdated_deps,
