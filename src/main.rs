@@ -57,7 +57,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         outdated_deps,
         total_deps,
         args.all,
-        theme.join().expect("operation in thread failed"),
+        theme.join().unwrap_or(termbg::Theme::Light),
     );
 
     if args.yes {
