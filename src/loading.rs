@@ -26,13 +26,18 @@ struct LoaderInner {
 pub fn init_loader(
     total_deps: usize,
 ) -> Result<Loader, Box<dyn std::error::Error>> {
+    let digits = length(total_deps as u32, 10) as u8;
     let mut state = LoaderInner {
         total_deps,
         loaded_deps: 0,
         stdout: stdout(),
-        cols: total_deps
-            .min(crossterm::terminal::size().unwrap().0 as usize * 4 / 5),
-        digits: length(total_deps as u32, 10) as u8,
+        cols: total_deps.min(
+            crossterm::terminal::size().unwrap().0 as usize
+                - 2
+                - digits as usize * 2
+                - 7,
+        ),
+        digits,
     };
 
     enable_raw_mode()?;
@@ -40,13 +45,14 @@ pub fn init_loader(
     queue!(
         state.stdout,
         MoveTo(0, 0),
+        Print("Scanning Dependencies"),
+        MoveToNextLine(1),
         Print(format!(
-            "Scanning  {:>width$}/{total_deps}   0%",
+            "[{}] {:>width$}/{total_deps}   0%",
+            "-".repeat(state.cols),
             0,
             width = state.digits as usize
-        )),
-        MoveToNextLine(1),
-        Print(format!("[{}]", "-".repeat(state.cols),))
+        ))
     )?;
 
     state.stdout.flush()?;
@@ -71,15 +77,14 @@ impl Loader {
 
         queue!(
             stdout,
-            MoveTo(10, 0),
+            MoveTo((index + 1) as u16, 1),
+            Print("="),
+            MoveToColumn(*cols as u16 + 3),
             Print(format!(
                 "{:>width$}/{total_deps} {perc:>3}%",
                 loaded_deps,
                 width = *digits as usize
             )),
-            MoveToNextLine(1),
-            MoveToColumn((index + 1) as u16),
-            Print("=")
         )
         .unwrap();
 

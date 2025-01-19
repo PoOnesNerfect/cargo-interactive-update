@@ -360,12 +360,12 @@ impl State {
 
         let bullet = if self.selected[i] { "●" } else { "○" };
 
-        let latest_version_date =
+        let _latest_version_date =
             get_date_from_datetime_string(latest_version_date.as_deref())
                 .unwrap_or("          ")
                 .italic()
                 .dim();
-        let current_version_date =
+        let _current_version_date =
             get_date_from_datetime_string(current_version_date.as_deref())
                 .unwrap_or("          ")
                 .italic()
